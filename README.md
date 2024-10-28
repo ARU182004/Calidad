@@ -31,8 +31,14 @@ Un equipo diverso y apasionado de practicantes del equipo de Analitica e Innovac
 
 ## 🚀 Objetivos del Proyecto
 El proyecto se divide en dos partes: 
-1. **Creacion Automatica de Informes PPTS** a traves de un chatbot en Microsoft Teams para facilitar el acceso a la informacion 
-2. **Extraccion de la informacion de PPTS y correos** para realizar la verificacion de fidelidad de informacion segun ciertas normas. 
+1. **Creacion Automatica de Informes PPTS** a traves de un chatbot en Microsoft Teams para facilitar el acceso a la informacion, posibilidad de crear los sigueintes tipos de informes:
+   * Sprint Planning (Memorando)
+   * Informe borrador de Observaciones
+   * Informe Final de Observaciones
+   * Informe Borrador
+   * Informe Final
+     
+3. **Extraccion de la informacion de PPTS y correos** para realizar la verificacion de fidelidad de informacion segun ciertas normas. 
 Ambas implementaciones son realizadas con python y estan documentadas en este repositorio y ejecutadas en el terminal <6001> de Pacifico Seguros.
 
 ## Fuentes de datos
@@ -47,6 +53,26 @@ memorando.sql -> contiene informacion basica del proyecto como fechas, equipo, n
 observaciones.sql -> contiene todas las observaciones de seguimiento asociadas al proyecto
 observaciones_informe.sql -> contiene solo las 3 primeras observaciones por orden de ID
 ```
+Estos son las funciones que se usan para la extranccion de datos de la base **PROYECTOSIAV2**
+```python
+## Conexión al TIGA
+cnxn_TIGA = pyodbc.connect(CNXN_TIGA)
+print("Conectando a la base de datos... ")
+cnxn = pyodbc.connect(CNXN_TIGA)
+cursor = cnxn.cursor()
+print("Conectado.")
+cursor.execute('SET LANGUAGE SPANISH')
+cursor.commit()
+
+def obtenerDatosDe(nombre_query : str) -> pd.DataFrame:
+    print(f"Extrayendo datos de {nombre_query}...")
+    sql = reemplazarVariablesQueries(open(os.path.join(QUERIES_PATH, f'{nombre_query}.sql'), 'r', encoding='utf-8-sig').read())
+    cursor.execute(sql)
+    dataframe_resultante = pd.DataFrame.from_records(cursor.fetchall(), columns=[col[0] for col in cursor.description]).drop_duplicates()
+    print("Se extrajeron " + str(len(dataframe_resultante.index)) + " filas y " + str(len(dataframe_resultante.columns)) + " columnas de " + nombre_query + ".")
+    return dataframe_resultante
+```
+
 ## Scripts
 
 ### Creacion de Informes PPTS
@@ -90,8 +116,222 @@ Se tiene una lista para la query de **cantidad_controles.sql** donde se tiene
 * **Llave (key) en cada diccionario** -> nombre del valor a reemplazar en la plantillas, puede esatr en un cuadro de texto o tabla
 * **valor (value) en cada diccionario** -> nombre de la columna del dataframe que corresponde a esa query
 
+#### 2. Plantillas de PPTS
+Contamos con plantillas para los diferentes tipos de informe como Sprint Planning (Memorando), Informe de Observaciones, Informes borrador y final, etc. Ademas, estas estan organizdas por negocio ya que las plantillas llevan una marca de agua alusivo al negocio.
+##### **OJO** 
+Para los ppts de observaciones se tiene una plantilla segun la cantidad de observaciones, es decir par ala plantilla **"plantilla_observaciones_8.pptx"** quiere decir que tiene espacio para 8 observaciones ya que en cada slide va una observacion. Por otro lado en cada ppt y cada slide hay cuadros de texto con informacion que sera reemplazada con el valor obtenido de la base de datos segun la logica de las listas de diccionarios.
+
 
 ### Funciones de creacion
+
+#### Sprint Planning
+
+Todas las funciones tienen la misma estructura, primero definen varibles para construir el path donde se va exportar el ppt modificado y luego comienza con la logica de llenado haciendo uso de la lisat de diccionario que se necesita, es posible que en un ppt se necesiten  una o mas listas de diccioanrios.
+```python
+def create_memorando(tipo,negocio,codigo,df, output_path):
+    if negocio == 'SEGUROS':
+        ppt_template_path = os.path.join(PLANTILLAS_PS_PATH, "07. Sprint Planning.pptx")
+    elif negocio == 'PRIMA':
+        ppt_template_path = os.path.join(PLANTILLAS_PRI_PATH, "07. Sprint Planning.pptx")   
+    elif negocio == 'SALUD':
+        ppt_template_path = os.path.join(PLANTILLAS_EPS_PATH, "07. Sprint Planning.pptx")
+    elif negocio == 'CREDISEGUROS':
+        ppt_template_path = os.path.join(PLANTILLAS_CRE_PATH, "07. Sprint Planning.pptx")
+    else:
+        ppt_template_path = os.path.join(PLANTILLAS_PS_PATH, "07. Sprint Planning.pptx")
+```
+Se realizan verificaciones de cantidad de slides y luego se recorre cada slide, en cada slide se debe identificar cada cuadro de texto y en cada cuadr de texto se identifica el texto que se debe reemplazar, si se encuentra en el diccioanrio entonces recorro el dataframe y reemplazo con la informacion del data frame, en este caso solo se realiza la verificacion de cuadros de texto.
+
+```python
+try:
+        ppt = Presentation(ppt_template_path)
+    except Exception as e:
+        print(f"Error al abrir el archivo PPT: {e}")
+        return
+
+    for slide_num, slide_data in enumerate(memorando_list, start=1):
+        if slide_num > len(ppt.slides):
+            print(f"No hay suficiente cantidad de slides en la presentación para el diccionario número {slide_num}")
+            break
+        slide = ppt.slides[slide_num - 1]
+        print(f"Diapositiva número: {slide_num}")
+
+        for shape in slide.shapes:
+            if shape.has_text_frame:
+                for paragraph in shape.text_frame.paragraphs:
+                    for run in paragraph.runs:
+                        for key, column_name in slide_data.items():
+                            if run.text == key:
+                                run.text = str(df[column_name].iloc[0])
+
+    try:
+        final_path = obtenerpath(tipo,negocio,codigo)
+        ppt.save(final_path)
+        print(f"PPT guardado en {final_path}")
+    except Exception as e:
+        print(f"Error al guardar el archivo PPT: {e}")
+```
+#### Observaciones Borrador y Final
+En el caso de los PPTS de Observaciones las estructuras de cada slide es la misma y se reemplaza con la informacion de cada observacion, por lo que en cada slide recorro los cuadros de texto, parrafos y tablas:
+##### Cuadros de texto:
+
+```python
+for index, row in enumerate(df.itertuples(index=False)):
+        slide = ppt.slides[index + 1]  
+        for shape in slide.shapes:
+            if shape.has_text_frame:
+                for paragraph in shape.text_frame.paragraphs:
+                    for run in paragraph.runs:
+                        for key, column_name in observaciones_list[0].items():
+                            if key in run.text:
+                                if key == 'Unidad_auditada_n':
+                                    run.text = run.text.replace(key, str(getattr(row, column_name)))
+                                else:
+                                    run.text = run.text.replace(key, str(getattr(row, column_name)))
+                                    run.font.size = font_size_observaciones
+```
+
+##### Parrafos:
+
+```python
+first_slide = ppt.slides[0]
+    for shape in first_slide.shapes:
+        if shape.has_text_frame:
+            for paragraph in shape.text_frame.paragraphs:
+                for run in paragraph.runs:
+                    for key, value in primera_slide_dict.items():
+                        if key in run.text:
+                            run.text = run.text.replace(key, str(value))
+```
+##### Tablas:
+
+```python
+for shape in slide.shapes:
+            if shape.has_table:
+                table = shape.table
+                for cell in table.iter_cells():
+                    for key, column_name in observaciones_list[0].items():
+                        if key in cell.text:
+                            cell.text = cell.text.replace(key, str(getattr(row, column_name)))
+                            for paragraph in cell.text_frame.paragraphs:
+                                for run in paragraph.runs:
+                                    run.font.size = font_size_observaciones
+```
+#### Informe Borrador y final
+
+En este caso se usan varias listas de diccionarios para rellenar los slides con informacion:
+
+
+```python
+listas_diccionarios = [
+        (calificativo_total_list, df_calificativo_total),
+        (calificativo_unidad_responsable_list, df_calificativo_unidad_responsable),
+        (cantidad_controles_list, df_cantidad_controles),
+        (observaciones_informe_list, df_observaciones_informe),
+        (memorando_list, df_datos)
+    ]
+```
+
+Se recorre cada lista de diccionario para llenar la informacion verificando cuadros de texto y tablas:
+
+```python
+for lista_dicc, df in listas_diccionarios:
+        for slide_num, slide_data in enumerate(lista_dicc):
+            if slide_num >= len(ppt.slides):
+                break
+            slide = ppt.slides[slide_num]
+
+            
+            font_size = font_size_first_slide if slide_num == 0 else font_size_other_slides
+
+            
+            for shape in slide.shapes:
+                if shape.has_text_frame:
+                    for paragraph in shape.text_frame.paragraphs:
+                        for run in paragraph.runs:
+                            # logica continua...
+            
+            for shape in slide.shapes:
+                if shape.has_table:
+                    table = shape.table
+                    for cell in table.iter_cells():
+                        # logica continua...
+
+```
+
+### Funciones auxiliares
+
+#### Funciones para extraer el ultimo registro del excel temporal, extraemos el codigo del proyecto, el tipo de informe y negocio del proyecto
+
+
+```python
+def obtener_codigo_de_Excel(file_path):
+    df = pd.read_excel(file_path)
+    codigo = df['CODIGO'].iloc[-1]
+    print(codigo)
+    return codigo
+
+def obtener_tipo_de_Excel(file_path):
+    df = pd.read_excel(file_path)
+    tipo = df['TIPO'].iloc[-1]
+    negocio = df['NEGOCIO'].iloc[-1]
+    print(tipo)
+    return tipo,negocio
+
+```
+#### Funcion para construir el path donde se exportara el PPT, el path se crea apartir del Negocio, el codigo del proyecto y el tipo del informe.
+```python
+def obtenerpath(tipo,negocio,codigo):
+    programado = 'PROGRAMADOS'
+    anio= '2024'
+    if codigo.__contains__('NPRO'):
+        programado = 'NO PROGRAMADOS'
+    if codigo.__contains__('2025'):
+        anio = '2025'
+
+    if negocio == 'SEGUROS':
+        final = os.path.join(FINAL_PATH,"Auditoria Interna - Evaluaciones-Documentos Seguros")
+    elif negocio == 'PRIMA':
+        final = os.path.join(FINAL_PATH,"Auditoria Interna - Evaluaciones-Documentos Prima AFP")
+    
+    elif negocio == 'SALUD':
+        final = os.path.join(FINAL_PATH,"Auditoria Interna - Evaluaciones-Documentos Salud")
+    
+    elif negocio == 'CREDISEGUROS':
+        final = os.path.join(FINAL_PATH,"Auditoria Interna - Evaluaciones-Documentos Crediseguro")
+    
+    final= os.path.join(final,anio)
+    final = os.path.join(final,programado)
+    final = os.path.join(final,codigo)
+
+    if tipo=='Memorando':
+        final=os.path.join(final,"Documentacion")
+        final=os.path.join(final,"Planificacion")
+        final=os.path.join(final,"07. Sprint Planning.pptx")
+    elif tipo=='Observaciones Borrador':
+        final=os.path.join(final,"Informe Borrador")
+        final=os.path.join(final,"02. Borrador Observaciones.pptx")
+    elif tipo=='Observaciones Final':
+        final=os.path.join(final,"Informe Final")
+        final=os.path.join(final,"02. Observaciones.pptx")        
+    elif tipo=='Informe Final':
+        final=os.path.join(final,"Informe Final")
+        final=os.path.join(final,"01. Informe Final.pptx")
+    elif tipo=='Informe Borrador':
+        final=os.path.join(final,"Informe Borrador")
+        final=os.path.join(final,"01. Borrador Informe.pptx")
+    return final
+
+```
+
+
+
+
+
+
+
+
+
 
 
 
